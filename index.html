@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Subnet Calculator</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #bdbbbd; color: #161616; font: 18px Arial, sans-serif; }
+  main { max-width: 540px; }
+  h1 { margin: 0; background: #050505; color: white; padding: 3px; height: 35px; font-size: 23px; }
+  h1::before { content: "◯"; color: #aaa; margin-right: 8px; }
+  .panel { padding: 13px 6.3% 21px 3%; }
+  .columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9.6%; }
+  .field { display: block; margin: 0 0 14px; min-width: 0; }
+  fieldset { border: 0; padding: 0; height: 55px; }
+  legend { padding: 0; margin-bottom: 5px; }
+  input[type="radio"] { accent-color: #383838; }
+  .value { display: block; width: 100%; margin-top: 3px; height: 32px; border: 2px inset #eee; border-radius: 0; color: inherit; font: 20px Arial, sans-serif; }
+  output.value { text-align: center; line-height: 27px; }
+  select, input.value { background: #fffefe; }
+  #hosts { border-color: #64a4cd; }
+  #bitmap { background: #f2f0f2; font: bold clamp(11px, 3.4vw, 18px)/28px Consolas, monospace; }
+  .network { color: #a32d37; }
+  .subnet { color: #89681b; }
+  .host { color: white; background: #086bb6; }
+  @media (max-width: 420px) {
+    body { font-size: 15px; }
+    .value { font-size: 16px; }
+    .columns { gap: 12px; }
+  }
+</style>
+<main>
+  <h1>Subnet Calculator</h1>
+  <div class="panel">
+    <div class="columns">
+      <div>
+        <fieldset class="field">
+          <legend>Network Class</legend>
+          <label>A <input type="radio" name="class" value="A" checked></label>
+          <label>B <input type="radio" name="class" value="B"></label>
+          <label>C <input type="radio" name="class" value="C"></label>
+        </fieldset>
+        <label class="field">IP Address<input class="value" id="ip" value="10.0.0.0" spellcheck="false"></label>
+        <label class="field">Subnet Mask<select class="value" id="mask"></select></label>
+        <label class="field">Subnet Bits<select class="value" id="bits"></select></label>
+        <label class="field">Maximum Subnets<select class="value" id="subnets"></select></label>
+      </div>
+      <div>
+        <label class="field">First Octet Range<output class="value" id="octets"></output></label>
+        <label class="field">Hex IP Address<output class="value" id="hex"></output></label>
+        <label class="field">Wildcard Mask<output class="value" id="wildcard"></output></label>
+        <label class="field">Mask Bits<select class="value" id="prefix"></select></label>
+        <label class="field">Hosts per Subnet<select class="value" id="hosts"></select></label>
+      </div>
+    </div>
+    <label class="field">Host Address Range<output class="value" id="range"></output></label>
+    <div class="columns">
+      <label class="field">Subnet ID<output class="value" id="network"></output></label>
+      <label class="field">Broadcast Address<output class="value" id="broadcast"></output></label>
+    </div>
+    <label class="field">Subnet Bitmap<output class="value" id="bitmap"></output></label>
+  </div>
+</main>
+<script>
+  const classes = {
+    A: { base: 8, min: 1, max: 126, address: '10.0.0.0', signature: '0' },
+    B: { base: 16, min: 128, max: 191, address: '172.16.0.0', signature: '10' },
+    C: { base: 24, min: 192, max: 223, address: '192.168.0.0', signature: '110' }
+  };
+  const byId = id => document.getElementById(id);
+  const ip = byId('ip');
+  const radios = [...document.querySelectorAll('input[name="class"]')];
+  const dotted = number => [24, 16, 8, 0].map(shift => (number >>> shift) & 255).join('.');
+  let selected = classes.A;
+  let prefix = 16;
+
+  function readAddress() {
+    const parts = ip.value.trim().split('.');
+    if (parts.length !== 4 || parts.some(part => !/^\d{1,3}$/.test(part) || Number(part) > 255)) {
+      return null;
+    }
+    return parts.map(Number);
+  }
+
+  // Every dropdown uses the prefix length as its option value.
+  const choices = {
+    mask: bits => dotted(2 ** 32 - 2 ** (32 - bits)),
+    bits: bits => bits - selected.base,
+    subnets: bits => 2 ** (bits - selected.base),
+    prefix: bits => bits,
+    hosts: bits => 2 ** (32 - bits) - (bits < 31 ? 2 : 0)
+  };
+
+  function render() {
+    const { base, min, max, signature } = selected;
+    prefix = Math.max(base, prefix);
+    byId('octets').textContent = min + ' - ' + max;
+    for (const [id, label] of Object.entries(choices)) {
+      const select = byId(id);
+      select.replaceChildren(...Array.from({length: 33 - base}, (_, offset) => {
+        const bits = base + offset;
+        return new Option(label(bits), bits);
+      }));
+      select.value = prefix;
+    }
+
+    const octets = readAddress();
+    const size = 2 ** (32 - prefix);
+    byId('wildcard').textContent = dotted(size - 1);
+    ip.setAttribute('aria-invalid', String(!octets));
+    for (const id of ['hex', 'network', 'broadcast']) byId(id).textContent = '—';
+    byId('range').textContent = 'Enter a valid IPv4 address';
+    if (octets) {
+      const number = octets.reduce((total, octet) => total * 256 + octet, 0);
+      // Round down to the start of the address block containing this IP.
+      const first = Math.floor(number / size) * size;
+      const last = first + size - 1;
+      // Only conventional subnets reserve both ends of the block.
+      const reserved = prefix < 31 ? 1 : 0;
+      byId('hex').textContent = octets.map(octet => octet.toString(16).padStart(2, '0')).join('.').toUpperCase();
+      byId('network').textContent = dotted(first);
+      byId('broadcast').textContent = dotted(last);
+      byId('range').textContent = size === 1 ? dotted(first) : dotted(first + reserved) + ' - ' + dotted(last - reserved);
+    }
+    // Fill the class, borrowed subnet, and remaining host bits in order.
+    const bitmap = signature.padEnd(base, 'n').padEnd(prefix, 's').padEnd(32, 'h');
+    byId('bitmap').innerHTML = [...bitmap].map((bit, index) => {
+      const group = index < base ? 'network' : index < prefix ? 'subnet' : 'host';
+      const dot = index && index % 8 === 0 ? '.' : '';
+      return dot + '<span class="' + group + '">' + bit + '</span>';
+    }).join('');
+  }
+
+  ip.addEventListener('input', () => {
+    const octets = readAddress();
+    const radio = octets && radios.find(({value}) => octets[0] >= classes[value].min && octets[0] <= classes[value].max);
+    if (radio) {
+      radio.checked = true;
+      selected = classes[radio.value];
+    }
+    render();
+  });
+  for (const radio of radios) radio.addEventListener('change', () => {
+    selected = classes[radio.value];
+    ip.value = selected.address;
+    render();
+  });
+  for (const id of Object.keys(choices)) byId(id).addEventListener('change', event => {
+    prefix = Number(event.target.value);
+    render();
+  });
+  render();
+</script>
+</html>
